@@ -1,7 +1,6 @@
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -10,6 +9,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QCheckBox,
     QFormLayout,
+    QHBoxLayout,
 )
 
 from .ffmpeg_utils import (
@@ -28,19 +28,21 @@ class SplitterWidget(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setSpacing(14)
 
-        title = QLabel("Video Splitter / Cutter")
-        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        title = QLabel("Split / Trim Video")
+        title.setObjectName("panelTitle")
 
         form = QFormLayout()
+        form.setSpacing(12)
 
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
         self.start_edit = QLineEdit()
         self.end_edit = QLineEdit()
 
-        self.start_edit.setPlaceholderText("Example: 00:00:10")
-        self.end_edit.setPlaceholderText("Example: 00:01:30")
+        self.start_edit.setPlaceholderText("00:00:10")
+        self.end_edit.setPlaceholderText("00:01:30")
 
         input_row = QHBoxLayout()
         input_row.addWidget(self.input_edit)
@@ -54,25 +56,27 @@ class SplitterWidget(QWidget):
         output_browse.clicked.connect(self.browse_output)
         output_row.addWidget(output_browse)
 
-        form.addRow("Input Video:", input_row)
-        form.addRow("Output File:", output_row)
-        form.addRow("Start Time:", self.start_edit)
-        form.addRow("End Time:", self.end_edit)
+        form.addRow("Input Video", input_row)
+        form.addRow("Output File", output_row)
+        form.addRow("Start Time", self.start_edit)
+        form.addRow("End Time", self.end_edit)
 
-        self.lossless_checkbox = QCheckBox("Use lossless cut (-c copy)")
+        self.lossless_checkbox = QCheckBox("Use fast lossless split (copy streams)")
         self.lossless_checkbox.setChecked(True)
 
-        self.run_button = QPushButton("Start Split")
+        self.run_button = QPushButton("Export Split")
+        self.run_button.setObjectName("accentButton")
         self.run_button.clicked.connect(self.run_split)
 
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
+        self.log_box.setPlaceholderText("FFmpeg logs will appear here...")
 
         layout.addWidget(title)
         layout.addLayout(form)
         layout.addWidget(self.lossless_checkbox)
         layout.addWidget(self.run_button)
-        layout.addWidget(QLabel("Logs:"))
+        layout.addWidget(QLabel("Logs"))
         layout.addWidget(self.log_box)
 
     def browse_input(self):
@@ -128,7 +132,6 @@ class SplitterWidget(QWidget):
             return
 
         ffmpeg = find_ffmpeg()
-
         start_time = normalize_time(start_time)
         end_time = normalize_time(end_time)
 

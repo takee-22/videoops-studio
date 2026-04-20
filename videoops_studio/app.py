@@ -1,238 +1,223 @@
-import sys
-
 from PyQt6.QtWidgets import (
-    QApplication,
-    QMainWindow,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
-    QListWidget,
-    QStackedWidget,
+    QFileDialog,
+    QTextEdit,
+    QMessageBox,
+    QFormLayout,
+    QComboBox,
 )
 
-from .config import load_settings, save_settings
-from .splitter import SplitterWidget
-from .merger import MergerWidget
-from .converter import ConverterWidget
+from .ffmpeg_utils import FFmpegWorker, find_ffmpeg, probe_media_info, format_bytes, format_duration
 
 
-DARK_THEME = """
-QWidget {
-    background-color: #1e1e1e;
-    color: #f0f0f0;
-    font-size: 13px;
-    font-family: Segoe UI;
-}
-
-QMainWindow {
-    background-color: #1e1e1e;
-}
-
-QLabel {
-    color: #f0f0f0;
-}
-
-QPushButton {
-    background-color: #2d2d2d;
-    color: #ffffff;
-    border: 1px solid #444444;
-    padding: 8px 12px;
-    border-radius: 6px;
-}
-
-QPushButton:hover {
-    background-color: #3a3a3a;
-}
-
-QPushButton:pressed {
-    background-color: #505050;
-}
-
-QLineEdit, QTextEdit, QListWidget, QComboBox {
-    background-color: #252526;
-    color: #ffffff;
-    border: 1px solid #444444;
-    border-radius: 6px;
-    padding: 6px;
-}
-
-QListWidget::item {
-    padding: 8px;
-    margin: 2px;
-}
-
-QListWidget::item:selected {
-    background-color: #0078d4;
-    color: #ffffff;
-    border-radius: 4px;
-}
-"""
-
-LIGHT_THEME = """
-QWidget {
-    background-color: #f5f5f5;
-    color: #202020;
-    font-size: 13px;
-    font-family: Segoe UI;
-}
-
-QMainWindow {
-    background-color: #f5f5f5;
-}
-
-QLabel {
-    color: #202020;
-}
-
-QPushButton {
-    background-color: #ffffff;
-    color: #202020;
-    border: 1px solid #bdbdbd;
-    padding: 8px 12px;
-    border-radius: 6px;
-}
-
-QPushButton:hover {
-    background-color: #eaeaea;
-}
-
-QPushButton:pressed {
-    background-color: #dcdcdc;
-}
-
-QLineEdit, QTextEdit, QListWidget, QComboBox {
-    background-color: #ffffff;
-    color: #202020;
-    border: 1px solid #bdbdbd;
-    border-radius: 6px;
-    padding: 6px;
-}
-
-QListWidget::item {
-    padding: 8px;
-    margin: 2px;
-}
-
-QListWidget::item:selected {
-    background-color: #cfe8ff;
-    color: #000000;
-    border-radius: 4px;
-}
-"""
-
-
-def apply_theme(app: QApplication, theme_name: str) -> None:
-    if theme_name == "light":
-        app.setStyleSheet(LIGHT_THEME)
-    else:
-        app.setStyleSheet(DARK_THEME)
-
-
-class HomeWidget(QWidget):
+class ConverterWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self.worker = None
+        self.init_ui()
 
+    def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setSpacing(14)
 
-        title = QLabel("VideoOps Studio")
-        title.setStyleSheet("font-size: 28px; font-weight: bold;")
+        title = QLabel("Convert / Transcode Video")
+        title.setObjectName("panelTitle")
 
-        text = QLabel(
-            "A PyQt + FFmpeg desktop toolkit for video splitting, merging, and converting.\n\n"
-            "Select a tool from the left side."
-        )
-        text.setWordWrap(True)
+        form = QFormLayout()
+        form.setSpacing(12)
+
+        self.input_edit = QLineEdit()
+        self.output_edit = QLineEdit()
+
+        input_row = QHBoxLayout()
+        input_row.addWidget(self.input_edit)
+        input_browse = QPushButton("Browse")
+        input_browse.clicked.connect(self.browse_input)
+        input_row.addWidget(input_browse)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(self.output_edit)
+        output_browse = QPushButton("Save As")
+        output_browse.clicked.connect(self.browse_output)
+        output_row.addWidget(output_browse)
+
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["mp4", "mkv", "avi", "mov"])
+
+        self.video_codec_combo = QComboBox()
+        self.video_codec_combo.addItems(["libx264", "libx265", "mpeg4"])
+
+        self.audio_codec_combo = QComboBox()
+        self.audio_codec_combo.addItems(["aac", "mp3", "copy"])
+
+        self.resolution_combo = QComboBox()
+        self.resolution_combo.addItems([
+            "Keep Original",
+            "1920x1080",
+            "1280x720",
+            "854x480",
+            "640x360"
+        ])
+
+        self.fps_combo = QComboBox()
+        self.fps_combo.addItems([
+            "Keep Original",
+            "60",
+            "30",
+            "25",
+            "24"
+        ])
+
+        self.crf_combo = QComboBox()
+        self.crf_combo.addItems(["18", "20", "23", "25", "28"])
+        self.crf_combo.setCurrentText("23")
+
+        inspect_btn = QPushButton("Inspect Input")
+        inspect_btn.clicked.connect(self.inspect_input)
+
+        form.addRow("Input Video", input_row)
+        form.addRow("Output File", output_row)
+        form.addRow("Format", self.format_combo)
+        form.addRow("Video Codec", self.video_codec_combo)
+        form.addRow("Audio Codec", self.audio_codec_combo)
+        form.addRow("Resolution", self.resolution_combo)
+        form.addRow("FPS", self.fps_combo)
+        form.addRow("CRF", self.crf_combo)
+        form.addRow("", inspect_btn)
+
+        self.info_label = QTextEdit()
+        self.info_label.setReadOnly(True)
+        self.info_label.setMaximumHeight(150)
+        self.info_label.setPlaceholderText("Input video info...")
+
+        self.run_button = QPushButton("Export Converted Video")
+        self.run_button.setObjectName("accentButton")
+        self.run_button.clicked.connect(self.run_convert)
+
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setPlaceholderText("FFmpeg logs will appear here...")
 
         layout.addWidget(title)
-        layout.addWidget(text)
-        layout.addStretch()
+        layout.addLayout(form)
+        layout.addWidget(QLabel("Input Video Info"))
+        layout.addWidget(self.info_label)
+        layout.addWidget(self.run_button)
+        layout.addWidget(QLabel("Logs"))
+        layout.addWidget(self.log_box)
 
+    def browse_input(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Input Video",
+            "",
+            "Video Files (*.mp4 *.mkv *.avi *.mov *.dav *.ts *.wmv);;All Files (*.*)"
+        )
+        if file_path:
+            self.input_edit.setText(file_path)
 
-class MainWindow(QMainWindow):
-    def __init__(self, app: QApplication, theme_name: str):
-        super().__init__()
-        self.app = app
-        self.theme_name = theme_name
+    def browse_output(self):
+        selected_format = self.format_combo.currentText()
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Converted Video",
+            f"output.{selected_format}",
+            "Video Files (*.mp4 *.mkv *.avi *.mov);;All Files (*.*)"
+        )
+        if file_path:
+            self.output_edit.setText(file_path)
 
-        self.setWindowTitle("VideoOps Studio")
-        self.resize(1200, 760)
+    def inspect_input(self):
+        input_file = self.input_edit.text().strip()
+        if not input_file:
+            QMessageBox.warning(self, "Missing Input", "Please select an input file.")
+            return
 
-        central = QWidget()
-        self.setCentralWidget(central)
+        info = probe_media_info(input_file)
 
-        root_layout = QVBoxLayout(central)
+        if "error" in info:
+            self.info_label.setPlainText(f"Error: {info['error']}")
+            return
 
-        top_bar = QHBoxLayout()
-        title = QLabel("VideoOps Studio")
-        title.setStyleSheet("font-size: 24px; font-weight: bold;")
+        text = []
+        text.append(f"Duration: {format_duration(info.get('duration', ''))}")
+        text.append(f"Size: {format_bytes(info.get('size', ''))}")
+        text.append(f"Bitrate: {info.get('bit_rate', '')}")
+        text.append(f"Video Codec: {info.get('video_codec', '')}")
+        text.append(f"Audio Codec: {info.get('audio_codec', '')}")
+        text.append(f"Resolution: {info.get('width', '')} x {info.get('height', '')}")
+        text.append(f"FPS: {info.get('fps', '')}")
 
-        self.theme_button = QPushButton()
-        self.update_theme_button_text()
-        self.theme_button.clicked.connect(self.toggle_theme)
+        self.info_label.setPlainText("\n".join(text))
 
-        top_bar.addWidget(title)
-        top_bar.addStretch()
-        top_bar.addWidget(self.theme_button)
+    def append_log(self, text: str):
+        self.log_box.append(text)
 
-        content_layout = QHBoxLayout()
+    def set_running(self, running: bool):
+        self.run_button.setEnabled(not running)
 
-        self.sidebar = QListWidget()
-        self.sidebar.setFixedWidth(220)
-        self.sidebar.addItems([
-            "Home",
-            "Splitter",
-            "Merger",
-            "Converter",
-        ])
-        self.sidebar.currentRowChanged.connect(self.change_page)
+    def run_convert(self):
+        input_file = self.input_edit.text().strip()
+        output_file = self.output_edit.text().strip()
 
-        self.stack = QStackedWidget()
-        self.stack.addWidget(HomeWidget())
-        self.stack.addWidget(SplitterWidget())
-        self.stack.addWidget(MergerWidget())
-        self.stack.addWidget(ConverterWidget())
+        if not input_file:
+            QMessageBox.warning(self, "Missing Input", "Please select an input video.")
+            return
 
-        content_layout.addWidget(self.sidebar)
-        content_layout.addWidget(self.stack, 1)
+        if not output_file:
+            QMessageBox.warning(self, "Missing Output", "Please select an output file.")
+            return
 
-        root_layout.addLayout(top_bar)
-        root_layout.addLayout(content_layout)
+        ffmpeg = find_ffmpeg()
 
-        self.sidebar.setCurrentRow(0)
+        video_codec = self.video_codec_combo.currentText()
+        audio_codec = self.audio_codec_combo.currentText()
+        resolution = self.resolution_combo.currentText()
+        fps = self.fps_combo.currentText()
+        crf = self.crf_combo.currentText()
 
-    def update_theme_button_text(self):
-        if self.theme_name == "dark":
-            self.theme_button.setText("Switch to Light Mode")
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-i", input_file,
+            "-c:v", video_codec
+        ]
+
+        if video_codec in {"libx264", "libx265"}:
+            cmd += ["-crf", crf, "-preset", "medium"]
+
+        if audio_codec == "copy":
+            cmd += ["-c:a", "copy"]
         else:
-            self.theme_button.setText("Switch to Dark Mode")
+            cmd += ["-c:a", audio_codec, "-b:a", "192k"]
 
-    def toggle_theme(self):
-        self.theme_name = "light" if self.theme_name == "dark" else "dark"
-        apply_theme(self.app, self.theme_name)
-        self.update_theme_button_text()
+        if resolution != "Keep Original":
+            cmd += ["-vf", f"scale={resolution}"]
 
-        settings = load_settings()
-        settings["theme"] = self.theme_name
-        save_settings(settings)
+        if fps != "Keep Original":
+            cmd += ["-r", fps]
 
-    def change_page(self, index: int):
-        self.stack.setCurrentIndex(index)
+        cmd.append(output_file)
 
+        self.log_box.clear()
+        self.set_running(True)
 
-def main():
-    app = QApplication(sys.argv)
+        self.worker = FFmpegWorker(cmd)
+        self.worker.log.connect(self.append_log)
+        self.worker.finished_signal.connect(self.on_finished)
+        self.worker.start()
 
-    settings = load_settings()
-    theme_name = settings.get("theme", "dark")
-    apply_theme(app, theme_name)
+    def on_finished(self, success: bool, message: str):
+        self.set_running(False)
+        self.append_log("")
+        self.append_log(message)
 
-    window = MainWindow(app, theme_name)
-    window.show()
-
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
+        if success:
+            QMessageBox.information(self, "Done", message)
+        else:
+            QMessageBox.critical(self, "Error", message)

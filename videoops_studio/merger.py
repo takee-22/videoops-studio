@@ -23,15 +23,17 @@ class MergerWidget(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setSpacing(14)
 
-        title = QLabel("Video Merger")
-        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        title = QLabel("Merge Videos")
+        title.setObjectName("panelTitle")
 
         self.file_list = QListWidget()
+        self.file_list.setMinimumHeight(220)
 
         row1 = QHBoxLayout()
         add_btn = QPushButton("Add Files")
-        remove_btn = QPushButton("Remove Selected")
+        remove_btn = QPushButton("Remove")
         up_btn = QPushButton("Move Up")
         down_btn = QPushButton("Move Down")
 
@@ -52,24 +54,26 @@ class MergerWidget(QWidget):
         output_row.addWidget(self.output_edit)
         output_row.addWidget(output_btn)
 
-        self.lossless_checkbox = QCheckBox("Use lossless merge (concat demuxer + copy)")
+        self.lossless_checkbox = QCheckBox("Use concat + copy for fast merge")
         self.lossless_checkbox.setChecked(True)
 
-        self.run_button = QPushButton("Start Merge")
+        self.run_button = QPushButton("Export Merge")
+        self.run_button.setObjectName("accentButton")
         self.run_button.clicked.connect(self.run_merge)
 
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
+        self.log_box.setPlaceholderText("FFmpeg logs will appear here...")
 
         layout.addWidget(title)
-        layout.addWidget(QLabel("Input Files Order:"))
+        layout.addWidget(QLabel("Clip Queue"))
         layout.addWidget(self.file_list)
         layout.addLayout(row1)
-        layout.addWidget(QLabel("Output File:"))
+        layout.addWidget(QLabel("Output File"))
         layout.addLayout(output_row)
         layout.addWidget(self.lossless_checkbox)
         layout.addWidget(self.run_button)
-        layout.addWidget(QLabel("Logs:"))
+        layout.addWidget(QLabel("Logs"))
         layout.addWidget(self.log_box)
 
     def add_files(self):

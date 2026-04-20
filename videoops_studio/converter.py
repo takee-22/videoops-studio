@@ -23,11 +23,13 @@ class ConverterWidget(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setSpacing(14)
 
-        title = QLabel("Video Converter")
-        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        title = QLabel("Convert / Transcode Video")
+        title.setObjectName("panelTitle")
 
         form = QFormLayout()
+        form.setSpacing(12)
 
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
@@ -48,18 +50,10 @@ class ConverterWidget(QWidget):
         self.format_combo.addItems(["mp4", "mkv", "avi", "mov"])
 
         self.video_codec_combo = QComboBox()
-        self.video_codec_combo.addItems([
-            "libx264",
-            "libx265",
-            "mpeg4"
-        ])
+        self.video_codec_combo.addItems(["libx264", "libx265", "mpeg4"])
 
         self.audio_codec_combo = QComboBox()
-        self.audio_codec_combo.addItems([
-            "aac",
-            "mp3",
-            "copy"
-        ])
+        self.audio_codec_combo.addItems(["aac", "mp3", "copy"])
 
         self.resolution_combo = QComboBox()
         self.resolution_combo.addItems([
@@ -86,32 +80,35 @@ class ConverterWidget(QWidget):
         inspect_btn = QPushButton("Inspect Input")
         inspect_btn.clicked.connect(self.inspect_input)
 
-        form.addRow("Input Video:", input_row)
-        form.addRow("Output File:", output_row)
-        form.addRow("Format:", self.format_combo)
-        form.addRow("Video Codec:", self.video_codec_combo)
-        form.addRow("Audio Codec:", self.audio_codec_combo)
-        form.addRow("Resolution:", self.resolution_combo)
-        form.addRow("FPS:", self.fps_combo)
-        form.addRow("CRF:", self.crf_combo)
+        form.addRow("Input Video", input_row)
+        form.addRow("Output File", output_row)
+        form.addRow("Format", self.format_combo)
+        form.addRow("Video Codec", self.video_codec_combo)
+        form.addRow("Audio Codec", self.audio_codec_combo)
+        form.addRow("Resolution", self.resolution_combo)
+        form.addRow("FPS", self.fps_combo)
+        form.addRow("CRF", self.crf_combo)
         form.addRow("", inspect_btn)
 
         self.info_label = QTextEdit()
         self.info_label.setReadOnly(True)
-        self.info_label.setMaximumHeight(140)
+        self.info_label.setMaximumHeight(150)
+        self.info_label.setPlaceholderText("Input video info...")
 
-        self.run_button = QPushButton("Start Convert")
+        self.run_button = QPushButton("Export Converted Video")
+        self.run_button.setObjectName("accentButton")
         self.run_button.clicked.connect(self.run_convert)
 
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
+        self.log_box.setPlaceholderText("FFmpeg logs will appear here...")
 
         layout.addWidget(title)
         layout.addLayout(form)
-        layout.addWidget(QLabel("Input Video Info:"))
+        layout.addWidget(QLabel("Input Video Info"))
         layout.addWidget(self.info_label)
         layout.addWidget(self.run_button)
-        layout.addWidget(QLabel("Logs:"))
+        layout.addWidget(QLabel("Logs"))
         layout.addWidget(self.log_box)
 
     def browse_input(self):
