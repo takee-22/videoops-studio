@@ -1,131 +1,226 @@
-from pathlib import Path
-
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QListWidget,
-    QMessageBox, QLabel, QComboBox, QPlainTextEdit
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QFileDialog,
+    QTextEdit,
+    QMessageBox,
+    QFormLayout,
+    QComboBox,
 )
 
-from videoops_studio.ffmpeg_utils import (
-    POPULAR_INPUT_FILTER,
-    POPULAR_OUTPUT_EXTS,
-    ffmpeg_exists,
-    convert_video,
-)
+from .ffmpeg_utils import FFmpegWorker, find_ffmpeg, probe_media_info, format_bytes, format_duration
 
 
-class ConverterTab(QWidget):
+class ConverterWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self.worker = None
+        self.init_ui()
 
-        self.listbox = QListWidget()
-        self.output_dir = ""
+    def init_ui(self):
+        layout = QVBoxLayout(self)
 
-        self.btn_add = QPushButton("Add Files")
-        self.btn_remove = QPushButton("Remove Selected")
-        self.btn_pick_folder = QPushButton("Choose Output Folder")
-        self.btn_convert = QPushButton("Convert")
+        title = QLabel("Video Converter")
+        title.setStyleSheet("font-size: 20px; font-weight: bold;")
 
-        self.lbl_output_dir = QLabel("No output folder selected")
+        form = QFormLayout()
 
-        self.cmb_format = QComboBox()
-        self.cmb_format.addItems(POPULAR_OUTPUT_EXTS)
+        self.input_edit = QLineEdit()
+        self.output_edit = QLineEdit()
 
-        self.cmb_mode = QComboBox()
-        self.cmb_mode.addItems(["safe", "copy"])
-        self.cmb_mode.setCurrentText("safe")
+        input_row = QHBoxLayout()
+        input_row.addWidget(self.input_edit)
+        input_browse = QPushButton("Browse")
+        input_browse.clicked.connect(self.browse_input)
+        input_row.addWidget(input_browse)
 
-        self.log_box = QPlainTextEdit()
+        output_row = QHBoxLayout()
+        output_row.addWidget(self.output_edit)
+        output_browse = QPushButton("Save As")
+        output_browse.clicked.connect(self.browse_output)
+        output_row.addWidget(output_browse)
+
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["mp4", "mkv", "avi", "mov"])
+
+        self.video_codec_combo = QComboBox()
+        self.video_codec_combo.addItems([
+            "libx264",
+            "libx265",
+            "mpeg4"
+        ])
+
+        self.audio_codec_combo = QComboBox()
+        self.audio_codec_combo.addItems([
+            "aac",
+            "mp3",
+            "copy"
+        ])
+
+        self.resolution_combo = QComboBox()
+        self.resolution_combo.addItems([
+            "Keep Original",
+            "1920x1080",
+            "1280x720",
+            "854x480",
+            "640x360"
+        ])
+
+        self.fps_combo = QComboBox()
+        self.fps_combo.addItems([
+            "Keep Original",
+            "60",
+            "30",
+            "25",
+            "24"
+        ])
+
+        self.crf_combo = QComboBox()
+        self.crf_combo.addItems(["18", "20", "23", "25", "28"])
+        self.crf_combo.setCurrentText("23")
+
+        inspect_btn = QPushButton("Inspect Input")
+        inspect_btn.clicked.connect(self.inspect_input)
+
+        form.addRow("Input Video:", input_row)
+        form.addRow("Output File:", output_row)
+        form.addRow("Format:", self.format_combo)
+        form.addRow("Video Codec:", self.video_codec_combo)
+        form.addRow("Audio Codec:", self.audio_codec_combo)
+        form.addRow("Resolution:", self.resolution_combo)
+        form.addRow("FPS:", self.fps_combo)
+        form.addRow("CRF:", self.crf_combo)
+        form.addRow("", inspect_btn)
+
+        self.info_label = QTextEdit()
+        self.info_label.setReadOnly(True)
+        self.info_label.setMaximumHeight(140)
+
+        self.run_button = QPushButton("Start Convert")
+        self.run_button.clicked.connect(self.run_convert)
+
+        self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
 
-        main = QVBoxLayout(self)
-        row1 = QHBoxLayout()
-        row2 = QHBoxLayout()
-        row3 = QHBoxLayout()
+        layout.addWidget(title)
+        layout.addLayout(form)
+        layout.addWidget(QLabel("Input Video Info:"))
+        layout.addWidget(self.info_label)
+        layout.addWidget(self.run_button)
+        layout.addWidget(QLabel("Logs:"))
+        layout.addWidget(self.log_box)
 
-        row1.addWidget(self.btn_add)
-        row1.addWidget(self.btn_remove)
+    def browse_input(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Input Video",
+            "",
+            "Video Files (*.mp4 *.mkv *.avi *.mov *.dav *.ts *.wmv);;All Files (*.*)"
+        )
+        if file_path:
+            self.input_edit.setText(file_path)
 
-        row2.addWidget(QLabel("Output Folder:"))
-        row2.addWidget(self.lbl_output_dir)
-        row2.addWidget(self.btn_pick_folder)
+    def browse_output(self):
+        selected_format = self.format_combo.currentText()
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Converted Video",
+            f"output.{selected_format}",
+            "Video Files (*.mp4 *.mkv *.avi *.mov);;All Files (*.*)"
+        )
+        if file_path:
+            self.output_edit.setText(file_path)
 
-        row3.addWidget(QLabel("Output Format:"))
-        row3.addWidget(self.cmb_format)
-        row3.addSpacing(12)
-        row3.addWidget(QLabel("Mode:"))
-        row3.addWidget(self.cmb_mode)
-        row3.addStretch()
-        row3.addWidget(self.btn_convert)
-
-        main.addLayout(row1)
-        main.addWidget(self.listbox)
-        main.addLayout(row2)
-        main.addLayout(row3)
-        main.addWidget(QLabel("Log"))
-        main.addWidget(self.log_box)
-
-        self.btn_add.clicked.connect(self.add_files)
-        self.btn_remove.clicked.connect(self.remove_selected)
-        self.btn_pick_folder.clicked.connect(self.pick_output_folder)
-        self.btn_convert.clicked.connect(self.run_convert)
-
-    def log(self, text: str):
-        self.log_box.appendPlainText(text)
-
-    def files(self) -> list[str]:
-        return [self.listbox.item(i).text() for i in range(self.listbox.count())]
-
-    def add_files(self):
-        if not ffmpeg_exists():
-            QMessageBox.critical(self, "Missing FFmpeg", "ffmpeg not found in PATH.")
+    def inspect_input(self):
+        input_file = self.input_edit.text().strip()
+        if not input_file:
+            QMessageBox.warning(self, "Missing Input", "Please select an input file.")
             return
 
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Files", "", POPULAR_INPUT_FILTER)
-        if not files:
+        info = probe_media_info(input_file)
+
+        if "error" in info:
+            self.info_label.setPlainText(f"Error: {info['error']}")
             return
 
-        for file in files:
-            self.listbox.addItem(file)
+        text = []
+        text.append(f"Duration: {format_duration(info.get('duration', ''))}")
+        text.append(f"Size: {format_bytes(info.get('size', ''))}")
+        text.append(f"Bitrate: {info.get('bit_rate', '')}")
+        text.append(f"Video Codec: {info.get('video_codec', '')}")
+        text.append(f"Audio Codec: {info.get('audio_codec', '')}")
+        text.append(f"Resolution: {info.get('width', '')} x {info.get('height', '')}")
+        text.append(f"FPS: {info.get('fps', '')}")
 
-    def remove_selected(self):
-        row = self.listbox.currentRow()
-        if row >= 0:
-            self.listbox.takeItem(row)
+        self.info_label.setPlainText("\n".join(text))
 
-    def pick_output_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
-        if not folder:
-            return
-        self.output_dir = folder
-        self.lbl_output_dir.setText(folder)
+    def append_log(self, text: str):
+        self.log_box.append(text)
+
+    def set_running(self, running: bool):
+        self.run_button.setEnabled(not running)
 
     def run_convert(self):
-        files = self.files()
-        if not files:
-            QMessageBox.warning(self, "No Files", "Add files first.")
+        input_file = self.input_edit.text().strip()
+        output_file = self.output_edit.text().strip()
+
+        if not input_file:
+            QMessageBox.warning(self, "Missing Input", "Please select an input video.")
             return
 
-        if not self.output_dir:
-            QMessageBox.warning(self, "No Output Folder", "Choose an output folder.")
+        if not output_file:
+            QMessageBox.warning(self, "Missing Output", "Please select an output file.")
             return
 
-        out_ext = self.cmb_format.currentText()
-        mode = self.cmb_mode.currentText()
+        ffmpeg = find_ffmpeg()
 
-        for file in files:
-            src = Path(file)
-            final_mode = "safe" if src.suffix.lower() == ".dav" else mode
-            out_file = str(Path(self.output_dir) / f"{src.stem}.{out_ext}")
+        video_codec = self.video_codec_combo.currentText()
+        audio_codec = self.audio_codec_combo.currentText()
+        resolution = self.resolution_combo.currentText()
+        fps = self.fps_combo.currentText()
+        crf = self.crf_combo.currentText()
 
-            self.log(f"Converting: {file}")
-            self.log(f"Output: {out_file}")
-            self.log(f"Mode: {final_mode}")
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-i", input_file,
+            "-c:v", video_codec
+        ]
 
-            ok, out = convert_video(file, out_file, final_mode)
-            self.log(out)
+        if video_codec in {"libx264", "libx265"}:
+            cmd += ["-crf", crf, "-preset", "medium"]
 
-            if not ok:
-                QMessageBox.critical(self, "Conversion Failed", f"Failed on:\n{file}")
-                return
+        if audio_codec == "copy":
+            cmd += ["-c:a", "copy"]
+        else:
+            cmd += ["-c:a", audio_codec, "-b:a", "192k"]
 
-        QMessageBox.information(self, "Done", "All files converted successfully.")
+        if resolution != "Keep Original":
+            cmd += ["-vf", f"scale={resolution}"]
+
+        if fps != "Keep Original":
+            cmd += ["-r", fps]
+
+        cmd.append(output_file)
+
+        self.log_box.clear()
+        self.set_running(True)
+
+        self.worker = FFmpegWorker(cmd)
+        self.worker.log.connect(self.append_log)
+        self.worker.finished_signal.connect(self.on_finished)
+        self.worker.start()
+
+    def on_finished(self, success: bool, message: str):
+        self.set_running(False)
+        self.append_log("")
+        self.append_log(message)
+
+        if success:
+            QMessageBox.information(self, "Done", message)
+        else:
+            QMessageBox.critical(self, "Error", message)

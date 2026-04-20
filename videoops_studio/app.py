@@ -1,70 +1,238 @@
 import sys
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QMessageBox
-from PySide6.QtGui import QAction
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QListWidget,
+    QStackedWidget,
+)
 
-from videoops_studio.splitter import SplitterTab
-from videoops_studio.merger import MergerTab
-from videoops_studio.converter import ConverterTab
-from videoops_studio.ffmpeg_utils import ffmpeg_exists, ffprobe_exists
+from .config import load_settings, save_settings
+from .splitter import SplitterWidget
+from .merger import MergerWidget
+from .converter import ConverterWidget
+
+
+DARK_THEME = """
+QWidget {
+    background-color: #1e1e1e;
+    color: #f0f0f0;
+    font-size: 13px;
+    font-family: Segoe UI;
+}
+
+QMainWindow {
+    background-color: #1e1e1e;
+}
+
+QLabel {
+    color: #f0f0f0;
+}
+
+QPushButton {
+    background-color: #2d2d2d;
+    color: #ffffff;
+    border: 1px solid #444444;
+    padding: 8px 12px;
+    border-radius: 6px;
+}
+
+QPushButton:hover {
+    background-color: #3a3a3a;
+}
+
+QPushButton:pressed {
+    background-color: #505050;
+}
+
+QLineEdit, QTextEdit, QListWidget, QComboBox {
+    background-color: #252526;
+    color: #ffffff;
+    border: 1px solid #444444;
+    border-radius: 6px;
+    padding: 6px;
+}
+
+QListWidget::item {
+    padding: 8px;
+    margin: 2px;
+}
+
+QListWidget::item:selected {
+    background-color: #0078d4;
+    color: #ffffff;
+    border-radius: 4px;
+}
+"""
+
+LIGHT_THEME = """
+QWidget {
+    background-color: #f5f5f5;
+    color: #202020;
+    font-size: 13px;
+    font-family: Segoe UI;
+}
+
+QMainWindow {
+    background-color: #f5f5f5;
+}
+
+QLabel {
+    color: #202020;
+}
+
+QPushButton {
+    background-color: #ffffff;
+    color: #202020;
+    border: 1px solid #bdbdbd;
+    padding: 8px 12px;
+    border-radius: 6px;
+}
+
+QPushButton:hover {
+    background-color: #eaeaea;
+}
+
+QPushButton:pressed {
+    background-color: #dcdcdc;
+}
+
+QLineEdit, QTextEdit, QListWidget, QComboBox {
+    background-color: #ffffff;
+    color: #202020;
+    border: 1px solid #bdbdbd;
+    border-radius: 6px;
+    padding: 6px;
+}
+
+QListWidget::item {
+    padding: 8px;
+    margin: 2px;
+}
+
+QListWidget::item:selected {
+    background-color: #cfe8ff;
+    color: #000000;
+    border-radius: 4px;
+}
+"""
+
+
+def apply_theme(app: QApplication, theme_name: str) -> None:
+    if theme_name == "light":
+        app.setStyleSheet(LIGHT_THEME)
+    else:
+        app.setStyleSheet(DARK_THEME)
+
+
+class HomeWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        layout = QVBoxLayout(self)
+
+        title = QLabel("VideoOps Studio")
+        title.setStyleSheet("font-size: 28px; font-weight: bold;")
+
+        text = QLabel(
+            "A PyQt + FFmpeg desktop toolkit for video splitting, merging, and converting.\n\n"
+            "Select a tool from the left side."
+        )
+        text.setWordWrap(True)
+
+        layout.addWidget(title)
+        layout.addWidget(text)
+        layout.addStretch()
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, app: QApplication, theme_name: str):
         super().__init__()
+        self.app = app
+        self.theme_name = theme_name
+
         self.setWindowTitle("VideoOps Studio")
-        self.resize(1200, 800)
+        self.resize(1200, 760)
 
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        central = QWidget()
+        self.setCentralWidget(central)
 
-        self.splitter_tab = SplitterTab()
-        self.merger_tab = MergerTab()
-        self.converter_tab = ConverterTab()
+        root_layout = QVBoxLayout(central)
 
-        self.tabs.addTab(self.splitter_tab, "Cut / Split")
-        self.tabs.addTab(self.merger_tab, "Merge")
-        self.tabs.addTab(self.converter_tab, "Convert")
+        top_bar = QHBoxLayout()
+        title = QLabel("VideoOps Studio")
+        title.setStyleSheet("font-size: 24px; font-weight: bold;")
 
-        self.create_menu()
-        self.check_tools()
+        self.theme_button = QPushButton()
+        self.update_theme_button_text()
+        self.theme_button.clicked.connect(self.toggle_theme)
 
-    def create_menu(self):
-        menu = self.menuBar().addMenu("Help")
+        top_bar.addWidget(title)
+        top_bar.addStretch()
+        top_bar.addWidget(self.theme_button)
 
-        about_action = QAction("About", self)
-        about_action.triggered.connect(self.show_about)
-        menu.addAction(about_action)
+        content_layout = QHBoxLayout()
 
-    def show_about(self):
-        QMessageBox.information(
-            self,
-            "About",
-            "VideoOps Studio\n\n"
-            "Features:\n"
-            "- Visual split into 2 or many parts\n"
-            "- Smart merge naming\n"
-            "- DAV-safe conversion mode\n"
-            "- Popular input/output formats",
-        )
+        self.sidebar = QListWidget()
+        self.sidebar.setFixedWidth(220)
+        self.sidebar.addItems([
+            "Home",
+            "Splitter",
+            "Merger",
+            "Converter",
+        ])
+        self.sidebar.currentRowChanged.connect(self.change_page)
 
-    def check_tools(self):
-        missing = []
-        if not ffmpeg_exists():
-            missing.append("ffmpeg")
-        if not ffprobe_exists():
-            missing.append("ffprobe")
+        self.stack = QStackedWidget()
+        self.stack.addWidget(HomeWidget())
+        self.stack.addWidget(SplitterWidget())
+        self.stack.addWidget(MergerWidget())
+        self.stack.addWidget(ConverterWidget())
 
-        if missing:
-            QMessageBox.warning(
-                self,
-                "Missing Tools",
-                "Missing from PATH: " + ", ".join(missing)
-            )
+        content_layout.addWidget(self.sidebar)
+        content_layout.addWidget(self.stack, 1)
+
+        root_layout.addLayout(top_bar)
+        root_layout.addLayout(content_layout)
+
+        self.sidebar.setCurrentRow(0)
+
+    def update_theme_button_text(self):
+        if self.theme_name == "dark":
+            self.theme_button.setText("Switch to Light Mode")
+        else:
+            self.theme_button.setText("Switch to Dark Mode")
+
+    def toggle_theme(self):
+        self.theme_name = "light" if self.theme_name == "dark" else "dark"
+        apply_theme(self.app, self.theme_name)
+        self.update_theme_button_text()
+
+        settings = load_settings()
+        settings["theme"] = self.theme_name
+        save_settings(settings)
+
+    def change_page(self, index: int):
+        self.stack.setCurrentIndex(index)
+
+
+def main():
+    app = QApplication(sys.argv)
+
+    settings = load_settings()
+    theme_name = settings.get("theme", "dark")
+    apply_theme(app, theme_name)
+
+    window = MainWindow(app, theme_name)
+    window.show()
+
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    main()

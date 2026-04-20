@@ -1,234 +1,176 @@
-from pathlib import Path
-
-from PySide6.QtCore import QUrl, Qt
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QLabel,
-    QSlider, QListWidget, QMessageBox, QComboBox, QPlainTextEdit
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QFileDialog,
+    QTextEdit,
+    QMessageBox,
+    QCheckBox,
+    QFormLayout,
 )
 
-from videoops_studio.ffmpeg_utils import (
-    POPULAR_INPUT_FILTER,
-    POPULAR_OUTPUT_EXTS,
-    ffmpeg_exists,
-    ffprobe_exists,
-    get_duration_seconds,
-    ms_to_readable,
-    split_into_segments,
+from .ffmpeg_utils import (
+    FFmpegWorker,
+    find_ffmpeg,
+    is_valid_time,
+    normalize_time,
 )
 
 
-class SplitterTab(QWidget):
+class SplitterWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self.worker = None
+        self.init_ui()
 
-        self.input_path = ""
-        self.duration_ms = 0
-        self.markers_ms = []
+    def init_ui(self):
+        layout = QVBoxLayout(self)
 
-        self.player = QMediaPlayer()
-        self.audio = QAudioOutput()
-        self.player.setAudioOutput(self.audio)
-        self.audio.setVolume(1.0)
+        title = QLabel("Video Splitter / Cutter")
+        title.setStyleSheet("font-size: 20px; font-weight: bold;")
 
-        self.video_widget = QVideoWidget()
-        self.player.setVideoOutput(self.video_widget)
+        form = QFormLayout()
 
-        self.lbl_file = QLabel("No video loaded")
-        self.lbl_time = QLabel("00:00:00 / 00:00:00")
+        self.input_edit = QLineEdit()
+        self.output_edit = QLineEdit()
+        self.start_edit = QLineEdit()
+        self.end_edit = QLineEdit()
 
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setRange(0, 0)
+        self.start_edit.setPlaceholderText("Example: 00:00:10")
+        self.end_edit.setPlaceholderText("Example: 00:01:30")
 
-        self.btn_open = QPushButton("Open Video")
-        self.btn_play = QPushButton("Play / Pause")
-        self.btn_back_5 = QPushButton("-5s")
-        self.btn_fwd_5 = QPushButton("+5s")
-        self.btn_back_30 = QPushButton("-30s")
-        self.btn_fwd_30 = QPushButton("+30s")
-        self.btn_add_marker = QPushButton("Add Cut Point")
-        self.btn_remove_marker = QPushButton("Remove Selected")
-        self.btn_clear_markers = QPushButton("Clear All")
-        self.btn_export = QPushButton("Export Segments")
+        input_row = QHBoxLayout()
+        input_row.addWidget(self.input_edit)
+        input_browse = QPushButton("Browse")
+        input_browse.clicked.connect(self.browse_input)
+        input_row.addWidget(input_browse)
 
-        self.cmb_format = QComboBox()
-        self.cmb_format.addItems(POPULAR_OUTPUT_EXTS)
+        output_row = QHBoxLayout()
+        output_row.addWidget(self.output_edit)
+        output_browse = QPushButton("Save As")
+        output_browse.clicked.connect(self.browse_output)
+        output_row.addWidget(output_browse)
 
-        self.cmb_mode = QComboBox()
-        self.cmb_mode.addItems(["safe", "copy"])
-        self.cmb_mode.setCurrentText("safe")
+        form.addRow("Input Video:", input_row)
+        form.addRow("Output File:", output_row)
+        form.addRow("Start Time:", self.start_edit)
+        form.addRow("End Time:", self.end_edit)
 
-        self.marker_list = QListWidget()
-        self.log_box = QPlainTextEdit()
+        self.lossless_checkbox = QCheckBox("Use lossless cut (-c copy)")
+        self.lossless_checkbox.setChecked(True)
+
+        self.run_button = QPushButton("Start Split")
+        self.run_button.clicked.connect(self.run_split)
+
+        self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
 
-        main = QVBoxLayout(self)
-        top_row = QHBoxLayout()
-        ctrl_row = QHBoxLayout()
-        marker_row = QHBoxLayout()
-        export_row = QHBoxLayout()
+        layout.addWidget(title)
+        layout.addLayout(form)
+        layout.addWidget(self.lossless_checkbox)
+        layout.addWidget(self.run_button)
+        layout.addWidget(QLabel("Logs:"))
+        layout.addWidget(self.log_box)
 
-        top_row.addWidget(self.btn_open)
-        top_row.addWidget(self.lbl_file)
+    def browse_input(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Input Video",
+            "",
+            "Video Files (*.mp4 *.mkv *.avi *.mov *.dav *.ts *.wmv);;All Files (*.*)"
+        )
+        if file_path:
+            self.input_edit.setText(file_path)
 
-        ctrl_row.addWidget(self.btn_back_30)
-        ctrl_row.addWidget(self.btn_back_5)
-        ctrl_row.addWidget(self.btn_play)
-        ctrl_row.addWidget(self.btn_fwd_5)
-        ctrl_row.addWidget(self.btn_fwd_30)
+    def browse_output(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Output Video",
+            "",
+            "MP4 Files (*.mp4);;MKV Files (*.mkv);;AVI Files (*.avi);;All Files (*.*)"
+        )
+        if file_path:
+            self.output_edit.setText(file_path)
 
-        marker_row.addWidget(self.btn_add_marker)
-        marker_row.addWidget(self.btn_remove_marker)
-        marker_row.addWidget(self.btn_clear_markers)
+    def append_log(self, text: str):
+        self.log_box.append(text)
 
-        export_row.addWidget(QLabel("Output Format:"))
-        export_row.addWidget(self.cmb_format)
-        export_row.addSpacing(12)
-        export_row.addWidget(QLabel("Mode:"))
-        export_row.addWidget(self.cmb_mode)
-        export_row.addStretch()
-        export_row.addWidget(self.btn_export)
+    def set_running(self, running: bool):
+        self.run_button.setEnabled(not running)
 
-        main.addLayout(top_row)
-        main.addWidget(self.video_widget, stretch=1)
-        main.addWidget(self.lbl_time)
-        main.addWidget(self.slider)
-        main.addLayout(ctrl_row)
-        main.addWidget(QLabel("Cut Points"))
-        main.addWidget(self.marker_list)
-        main.addLayout(marker_row)
-        main.addLayout(export_row)
-        main.addWidget(QLabel("Log"))
-        main.addWidget(self.log_box)
+    def run_split(self):
+        input_file = self.input_edit.text().strip()
+        output_file = self.output_edit.text().strip()
+        start_time = self.start_edit.text().strip()
+        end_time = self.end_edit.text().strip()
 
-        self.btn_open.clicked.connect(self.open_video)
-        self.btn_play.clicked.connect(self.toggle_play)
-        self.btn_back_5.clicked.connect(lambda: self.seek_relative(-5000))
-        self.btn_fwd_5.clicked.connect(lambda: self.seek_relative(5000))
-        self.btn_back_30.clicked.connect(lambda: self.seek_relative(-30000))
-        self.btn_fwd_30.clicked.connect(lambda: self.seek_relative(30000))
-        self.btn_add_marker.clicked.connect(self.add_marker)
-        self.btn_remove_marker.clicked.connect(self.remove_marker)
-        self.btn_clear_markers.clicked.connect(self.clear_markers)
-        self.btn_export.clicked.connect(self.export_segments)
-
-        self.slider.sliderMoved.connect(self.player.setPosition)
-        self.player.positionChanged.connect(self.on_position_changed)
-        self.player.durationChanged.connect(self.on_duration_changed)
-
-    def log(self, text: str):
-        self.log_box.appendPlainText(text)
-
-    def open_video(self):
-        if not ffmpeg_exists() or not ffprobe_exists():
-            QMessageBox.critical(self, "Missing FFmpeg", "ffmpeg or ffprobe not found in PATH.")
+        if not input_file:
+            QMessageBox.warning(self, "Missing Input", "Please select an input video.")
             return
 
-        file, _ = QFileDialog.getOpenFileName(self, "Open Video", "", POPULAR_INPUT_FILTER)
-        if not file:
+        if not output_file:
+            QMessageBox.warning(self, "Missing Output", "Please select an output file.")
             return
 
-        self.input_path = file
-        self.lbl_file.setText(file)
-        self.player.setSource(QUrl.fromLocalFile(file))
-        self.player.pause()
-        self.markers_ms.clear()
-        self.marker_list.clear()
-        self.log(f"Loaded: {file}")
-
-    def toggle_play(self):
-        if not self.input_path:
+        if not start_time or not end_time:
+            QMessageBox.warning(self, "Missing Time", "Please provide both start and end times.")
             return
-        if self.player.isPlaying():
-            self.player.pause()
+
+        if not is_valid_time(start_time):
+            QMessageBox.warning(self, "Invalid Time", "Start time format is invalid.")
+            return
+
+        if not is_valid_time(end_time):
+            QMessageBox.warning(self, "Invalid Time", "End time format is invalid.")
+            return
+
+        ffmpeg = find_ffmpeg()
+
+        start_time = normalize_time(start_time)
+        end_time = normalize_time(end_time)
+
+        if self.lossless_checkbox.isChecked():
+            cmd = [
+                ffmpeg,
+                "-y",
+                "-ss", start_time,
+                "-to", end_time,
+                "-i", input_file,
+                "-c", "copy",
+                output_file
+            ]
         else:
-            self.player.play()
+            cmd = [
+                ffmpeg,
+                "-y",
+                "-ss", start_time,
+                "-to", end_time,
+                "-i", input_file,
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", "23",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                output_file
+            ]
 
-    def seek_relative(self, delta_ms: int):
-        pos = self.player.position() + delta_ms
-        pos = max(0, min(pos, self.duration_ms))
-        self.player.setPosition(pos)
+        self.log_box.clear()
+        self.set_running(True)
 
-    def add_marker(self):
-        if not self.input_path:
-            return
+        self.worker = FFmpegWorker(cmd)
+        self.worker.log.connect(self.append_log)
+        self.worker.finished_signal.connect(self.on_finished)
+        self.worker.start()
 
-        pos = self.player.position()
-        if pos <= 0 or pos >= self.duration_ms:
-            QMessageBox.warning(self, "Invalid Point", "Move to a point inside the video.")
-            return
+    def on_finished(self, success: bool, message: str):
+        self.set_running(False)
+        self.append_log("")
+        self.append_log(message)
 
-        if pos not in self.markers_ms:
-            self.markers_ms.append(pos)
-            self.markers_ms.sort()
-            self.refresh_markers()
-
-    def remove_marker(self):
-        row = self.marker_list.currentRow()
-        if row < 0:
-            return
-        value = self.marker_list.item(row).data(Qt.UserRole)
-        if value in self.markers_ms:
-            self.markers_ms.remove(value)
-        self.refresh_markers()
-
-    def clear_markers(self):
-        self.markers_ms.clear()
-        self.refresh_markers()
-
-    def refresh_markers(self):
-        self.marker_list.clear()
-        for ms in self.markers_ms:
-            label = ms_to_readable(ms)
-            item_text = f"{label}"
-            self.marker_list.addItem(item_text)
-            self.marker_list.item(self.marker_list.count() - 1).setData(Qt.UserRole, ms)
-
-    def on_position_changed(self, pos: int):
-        if not self.slider.isSliderDown():
-            self.slider.setValue(pos)
-        self.lbl_time.setText(f"{ms_to_readable(pos)} / {ms_to_readable(self.duration_ms)}")
-
-    def on_duration_changed(self, duration: int):
-        self.duration_ms = duration
-        self.slider.setRange(0, duration)
-        self.lbl_time.setText(f"{ms_to_readable(self.player.position())} / {ms_to_readable(duration)}")
-
-    def export_segments(self):
-        if not self.input_path:
-            QMessageBox.warning(self, "No Video", "Open a video first.")
-            return
-
-        try:
-            total_duration = get_duration_seconds(self.input_path)
-        except Exception as e:
-            QMessageBox.critical(self, "Duration Error", str(e))
-            return
-
-        markers_sec = [m / 1000.0 for m in self.markers_ms]
-        if not markers_sec:
-            QMessageBox.warning(self, "No Cut Points", "Add at least one cut point.")
-            return
-
-        out_dir = QFileDialog.getExistingDirectory(self, "Select Output Folder")
-        if not out_dir:
-            return
-
-        out_ext = self.cmb_format.currentText()
-        mode = self.cmb_mode.currentText()
-
-        if Path(self.input_path).suffix.lower() == ".dav":
-            mode = "safe"
-
-        self.log(f"Exporting {len(markers_sec) + 1} segments...")
-        self.log(f"Duration: {total_duration:.2f}s")
-        self.log(f"Mode: {mode}, Format: {out_ext}")
-
-        ok, out = split_into_segments(self.input_path, markers_sec, out_dir, out_ext, mode)
-        self.log(out)
-
-        if ok:
-            QMessageBox.information(self, "Done", "Segments exported successfully.")
+        if success:
+            QMessageBox.information(self, "Done", message)
         else:
-            QMessageBox.critical(self, "Export Failed", "See log for details.")
+            QMessageBox.critical(self, "Error", message)

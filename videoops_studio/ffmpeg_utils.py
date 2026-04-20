@@ -3,212 +3,227 @@ import re
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
-
-POPULAR_INPUT_FILTER = (
-    "Video Files (*.mp4 *.mov *.mkv *.avi *.mpeg *.mpg *.dav *.wmv *.m4v *.ts *.mts *.m2ts);;"
-    "All Files (*.*)"
-)
-
-POPULAR_OUTPUT_EXTS = ["mp4", "mkv", "mov", "avi", "mpeg"]
+from PyQt6.QtCore import QThread, pyqtSignal
 
 
-def ffmpeg_exists() -> bool:
-    return shutil.which("ffmpeg") is not None
+TIME_PATTERN = re.compile(r"^(\d{2}:)?\d{2}:\d{2}(\.\d+)?$|^\d+(\.\d+)?$")
 
 
-def ffprobe_exists() -> bool:
-    return shutil.which("ffprobe") is not None
+def is_valid_time(value: str) -> bool:
+    value = value.strip()
+    if not value:
+        return False
+    return bool(TIME_PATTERN.match(value))
 
 
-def run_cmd(cmd: list[str]) -> tuple[bool, str]:
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        ok = result.returncode == 0
-        output = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
-        return ok, output.strip()
-    except Exception as e:
-        return False, str(e)
+def normalize_time(value: str) -> str:
+    return value.strip()
 
 
-def sec_to_hms(seconds: float) -> str:
-    seconds = max(0.0, float(seconds))
-    hrs = int(seconds // 3600)
-    mins = int((seconds % 3600) // 60)
-    secs = seconds % 60
-    return f"{hrs:02d}:{mins:02d}:{secs:06.3f}"
+def find_ffmpeg() -> str:
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
 
-
-def ms_to_readable(ms: int) -> str:
-    total_seconds = max(0, ms // 1000)
-    hrs = total_seconds // 3600
-    mins = (total_seconds % 3600) // 60
-    secs = total_seconds % 60
-    return f"{hrs:02d}:{mins:02d}:{secs:02d}"
-
-
-def get_duration_seconds(path: str) -> float:
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        path,
+    common_paths = [
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
     ]
-    ok, out = run_cmd(cmd)
-    if not ok:
-        raise RuntimeError(out)
-    return float(out.strip())
+
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+
+    return "ffmpeg"
 
 
-def sanitize_name(name: str) -> str:
-    return re.sub(r'[<>:"/\\|?*]+', "_", name).strip(" ._")
+def find_ffprobe() -> str:
+    exe = shutil.which("ffprobe")
+    if exe:
+        return exe
+
+    common_paths = [
+        r"C:\ffmpeg\bin\ffprobe.exe",
+        r"C:\Program Files\ffmpeg\bin\ffprobe.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffprobe.exe",
+    ]
+
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+
+    return "ffprobe"
 
 
-def input_ext(path: str) -> str:
-    return Path(path).suffix.lower().lstrip(".")
+def probe_media_info(file_path: str) -> dict:
+    ffprobe = find_ffprobe()
 
-
-def is_dav(path: str) -> bool:
-    return input_ext(path) == "dav"
-
-
-def smart_merge_name(files: list[str], out_ext: str) -> str:
-    if not files:
-        return f"merged_output.{out_ext}"
-
-    pattern = re.compile(r"(\d{2}\.\d{2}\.\d{2})-(\d{2}\.\d{2}\.\d{2})", re.IGNORECASE)
-
-    first_base = Path(files[0]).stem
-    last_base = Path(files[-1]).stem
-
-    m1 = pattern.search(first_base)
-    m2 = pattern.search(last_base)
-
-    if m1 and m2:
-        start_part = m1.group(1)
-        end_part = m2.group(2)
-        return f"{start_part}-{end_part}.{out_ext}"
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"merged_{timestamp}.{out_ext}"
-
-
-def segment_output_name(src_path: str, idx: int, start_sec: float, end_sec: float, out_ext: str) -> str:
-    base = Path(src_path).stem
-    start_txt = sec_to_hms(start_sec).replace(":", ".")[:8]
-    end_txt = sec_to_hms(end_sec).replace(":", ".")[:8]
-    safe_base = sanitize_name(base)
-    return f"{safe_base}_part{idx:02d}_{start_txt}-{end_txt}.{out_ext}"
-
-
-def codec_args_for_ext(ext: str) -> list[str]:
-    ext = ext.lower()
-
-    if ext in {"mp4", "mov", "mkv"}:
-        return ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k"]
-
-    if ext == "avi":
-        return ["-c:v", "mpeg4", "-q:v", "2", "-c:a", "mp3", "-b:a", "192k"]
-
-    if ext == "mpeg":
-        return ["-c:v", "mpeg2video", "-q:v", "2", "-c:a", "mp2", "-b:a", "192k"]
-
-    return ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k"]
-
-
-def convert_video(input_file: str, output_file: str, mode: str) -> tuple[bool, str]:
-    out_ext = input_ext(output_file)
-
-    if mode == "copy" and not is_dav(input_file):
-        cmd = ["ffmpeg", "-y", "-i", input_file, "-c", "copy", output_file]
-    else:
-        # Safe mode is better for DAV timestamp issues.
-        cmd = ["ffmpeg", "-y", "-fflags", "+genpts", "-i", input_file, *codec_args_for_ext(out_ext), output_file]
-
-    return run_cmd(cmd)
-
-
-def export_segment(input_file: str, start_sec: float, end_sec: float, output_file: str, mode: str) -> tuple[bool, str]:
-    out_ext = input_ext(output_file)
-    duration = max(0.001, end_sec - start_sec)
-
-    if mode == "copy" and not is_dav(input_file):
-        cmd = [
-            "ffmpeg", "-y",
-            "-ss", sec_to_hms(start_sec),
-            "-i", input_file,
-            "-t", f"{duration:.3f}",
-            "-c", "copy",
-            output_file,
-        ]
-    else:
-        cmd = [
-            "ffmpeg", "-y",
-            "-fflags", "+genpts",
-            "-ss", sec_to_hms(start_sec),
-            "-i", input_file,
-            "-t", f"{duration:.3f}",
-            *codec_args_for_ext(out_ext),
-            output_file,
-        ]
-
-    return run_cmd(cmd)
-
-
-def split_into_segments(
-    input_file: str,
-    markers_sec: list[float],
-    output_dir: str,
-    out_ext: str,
-    mode: str,
-) -> tuple[bool, str]:
-    total_duration = get_duration_seconds(input_file)
-    valid_markers = sorted(set(x for x in markers_sec if 0 < x < total_duration))
-
-    points = [0.0] + valid_markers + [total_duration]
-    logs = []
-
-    for i in range(len(points) - 1):
-        start_sec = points[i]
-        end_sec = points[i + 1]
-        out_name = segment_output_name(input_file, i + 1, start_sec, end_sec, out_ext)
-        out_path = str(Path(output_dir) / out_name)
-
-        ok, out = export_segment(input_file, start_sec, end_sec, out_path, mode)
-        logs.append(f"[SEGMENT {i + 1}] {out_name}\n{out}\n")
-        if not ok:
-            return False, "\n".join(logs)
-
-    return True, "\n".join(logs)
-
-
-def merge_videos(files: list[str], output_file: str, mode: str) -> tuple[bool, str]:
-    if len(files) < 2:
-        return False, "Need at least 2 files."
-
-    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt", encoding="utf-8") as tf:
-        list_path = tf.name
-        for file in files:
-            safe = file.replace("\\", "/").replace("'", r"'\''")
-            tf.write(f"file '{safe}'\n")
+    cmd = [
+        ffprobe,
+        "-v", "error",
+        "-show_entries",
+        "format=duration,size,bit_rate:stream=index,codec_type,codec_name,width,height,r_frame_rate",
+        "-of", "default=noprint_wrappers=1",
+        file_path
+    ]
 
     try:
-        if mode == "copy" and not any(is_dav(f) for f in files):
-            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_file]
-        else:
-            out_ext = input_ext(output_file)
-            cmd = [
-                "ffmpeg", "-y",
-                "-f", "concat", "-safe", "0", "-i", list_path,
-                *codec_args_for_ext(out_ext),
-                output_file,
-            ]
-        return run_cmd(cmd)
-    finally:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True
+        )
+        return parse_ffprobe_output(result.stdout)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def parse_ffprobe_output(text: str) -> dict:
+    info = {
+        "duration": "",
+        "size": "",
+        "bit_rate": "",
+        "video_codec": "",
+        "audio_codec": "",
+        "width": "",
+        "height": "",
+        "fps": "",
+    }
+
+    current_codec_type = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+
+        if key == "codec_type":
+            current_codec_type = value
+
+        elif key == "codec_name":
+            if current_codec_type == "video" and not info["video_codec"]:
+                info["video_codec"] = value
+            elif current_codec_type == "audio" and not info["audio_codec"]:
+                info["audio_codec"] = value
+
+        elif key == "width" and not info["width"]:
+            info["width"] = value
+
+        elif key == "height" and not info["height"]:
+            info["height"] = value
+
+        elif key == "r_frame_rate" and not info["fps"]:
+            info["fps"] = fps_from_fraction(value)
+
+        elif key in info and not info[key]:
+            info[key] = value
+
+    return info
+
+
+def fps_from_fraction(value: str) -> str:
+    try:
+        if "/" in value:
+            a, b = value.split("/", 1)
+            a = float(a)
+            b = float(b)
+            if b != 0:
+                return f"{a / b:.2f}"
+        return value
+    except Exception:
+        return value
+
+
+def format_bytes(num_bytes: str) -> str:
+    try:
+        size = float(num_bytes)
+    except Exception:
+        return num_bytes
+
+    units = ["B", "KB", "MB", "GB", "TB"]
+    idx = 0
+    while size >= 1024 and idx < len(units) - 1:
+        size /= 1024
+        idx += 1
+    return f"{size:.2f} {units[idx]}"
+
+
+def format_duration(seconds_text: str) -> str:
+    try:
+        total = float(seconds_text)
+        hours = int(total // 3600)
+        minutes = int((total % 3600) // 60)
+        seconds = total % 60
+        return f"{hours:02d}:{minutes:02d}:{seconds:06.3f}"
+    except Exception:
+        return seconds_text
+
+
+class FFmpegWorker(QThread):
+    log = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str)
+
+    def __init__(self, command: list[str], temp_file_to_delete: str | None = None):
+        super().__init__()
+        self.command = command
+        self.temp_file_to_delete = temp_file_to_delete
+
+    def run(self):
         try:
-            os.remove(list_path)
-        except OSError:
-            pass
+            self.log.emit("Running command:")
+            self.log.emit(" ".join(f'"{x}"' if " " in x else x for x in self.command))
+            self.log.emit("")
+
+            process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+
+            assert process.stdout is not None
+
+            for line in process.stdout:
+                line = line.rstrip()
+                if line:
+                    self.log.emit(line)
+
+            process.wait()
+
+            if process.returncode == 0:
+                self.finished_signal.emit(True, "Completed successfully.")
+            else:
+                self.finished_signal.emit(False, f"Process failed with code {process.returncode}.")
+
+        except Exception as e:
+            self.finished_signal.emit(False, str(e))
+
+        finally:
+            if self.temp_file_to_delete:
+                try:
+                    if os.path.exists(self.temp_file_to_delete):
+                        os.remove(self.temp_file_to_delete)
+                except Exception:
+                    pass
+
+
+def create_concat_file(video_paths: list[str]) -> str:
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8")
+    try:
+        for path in video_paths:
+            safe_path = Path(path).as_posix().replace("'", r"'\''")
+            temp.write(f"file '{safe_path}'\n")
+    finally:
+        temp.close()
+
+    return temp.name
