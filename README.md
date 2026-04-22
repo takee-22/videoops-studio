@@ -15,3 +15,14 @@ A simple desktop video utility app built with PySide6 and FFmpeg.
 
 ```cmd
 python -m videoops_studio.app
+
+
+## Current Features
+
+- CapCut-style desktop UI
+- Dark / Light mode
+- Video Splitter
+- Video Merger
+- Video Converter
+- One-file Windows EXE build
+- PyQt6 + FFmpeg based workflow

@@ -1,6 +1,7 @@
 import sys
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -13,6 +14,8 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QFrame,
     QTextEdit,
+    QFileDialog,
+    QMessageBox,
 )
 
 from .config import load_settings, save_settings
@@ -359,7 +362,15 @@ class HomeWidget(QWidget):
             "- Preview clips\n"
             "- Split or merge\n"
             "- Convert/export\n"
-            "- Add future timeline features later"
+            "- Add future timeline features later\n\n"
+            "Keyboard shortcuts:\n"
+            "Ctrl+O = Open File\n"
+            "Ctrl+E = Export Project\n"
+            "Ctrl+T = Toggle Theme\n"
+            "Ctrl+1 = Home\n"
+            "Ctrl+2 = Split\n"
+            "Ctrl+3 = Merge\n"
+            "Ctrl+4 = Convert"
         )
 
         layout.addWidget(title)
@@ -373,8 +384,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.app = app
         self.theme_name = theme_name
+        self.last_opened_file = ""
 
-        self.setWindowTitle("VideoOps Studio")
+        self.setWindowTitle("VideoOps Studio - CapCut Style V1")
         self.resize(1400, 850)
 
         central = QWidget()
@@ -435,19 +447,29 @@ class MainWindow(QMainWindow):
         preview_title = QLabel("Preview Monitor")
         preview_title.setObjectName("previewTitle")
 
-        self.preview_box = QLabel("VIDEO PREVIEW")
+        self.preview_box = QLabel("Drop Video Here or Use Import")
         self.preview_box.setObjectName("previewBox")
         self.preview_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_box.setMinimumHeight(260)
+        self.preview_box.setWordWrap(True)
 
         preview_controls = QHBoxLayout()
         preview_controls.setSpacing(10)
-        preview_controls.addWidget(QPushButton("Import"))
-        preview_controls.addWidget(QPushButton("Play"))
-        preview_controls.addWidget(QPushButton("Pause"))
-        preview_controls.addWidget(QPushButton("Stop"))
+
+        self.import_button = QPushButton("Import")
+        self.import_button.clicked.connect(self.open_file_action)
+
+        self.play_button = QPushButton("Play")
+        self.pause_button = QPushButton("Pause")
+        self.stop_button = QPushButton("Stop")
+        self.snapshot_button = QPushButton("Snapshot")
+
+        preview_controls.addWidget(self.import_button)
+        preview_controls.addWidget(self.play_button)
+        preview_controls.addWidget(self.pause_button)
+        preview_controls.addWidget(self.stop_button)
         preview_controls.addStretch()
-        preview_controls.addWidget(QPushButton("Snapshot"))
+        preview_controls.addWidget(self.snapshot_button)
 
         preview_layout.addWidget(preview_title)
         preview_layout.addWidget(self.preview_box)
@@ -464,9 +486,9 @@ class MainWindow(QMainWindow):
         right_title = QLabel("Inspector")
         right_title.setObjectName("sectionTitle")
 
-        inspector_box = QTextEdit()
-        inspector_box.setReadOnly(True)
-        inspector_box.setPlainText(
+        self.inspector_box = QTextEdit()
+        self.inspector_box.setReadOnly(True)
+        self.inspector_box.setPlainText(
             "Project Panel\n\n"
             "- Selected tool info\n"
             "- Output options\n"
@@ -478,15 +500,22 @@ class MainWindow(QMainWindow):
         quick_actions.setObjectName("sectionTitle")
 
         btn_row_1 = QHBoxLayout()
-        btn_row_1.addWidget(QPushButton("Open File"))
-        btn_row_1.addWidget(QPushButton("Open Folder"))
+        self.open_file_btn = QPushButton("Open File")
+        self.open_file_btn.clicked.connect(self.open_file_action)
+        self.open_folder_btn = QPushButton("Open Folder")
+        self.open_folder_btn.clicked.connect(self.open_folder_action)
+        btn_row_1.addWidget(self.open_file_btn)
+        btn_row_1.addWidget(self.open_folder_btn)
 
         btn_row_2 = QHBoxLayout()
-        btn_row_2.addWidget(QPushButton("Recent"))
-        btn_row_2.addWidget(QPushButton("Export"))
+        self.recent_btn = QPushButton("Recent")
+        self.export_btn_top = QPushButton("Export")
+        self.export_btn_top.clicked.connect(self.export_action)
+        btn_row_2.addWidget(self.recent_btn)
+        btn_row_2.addWidget(self.export_btn_top)
 
         right_layout.addWidget(right_title)
-        right_layout.addWidget(inspector_box)
+        right_layout.addWidget(self.inspector_box)
         right_layout.addWidget(quick_actions)
         right_layout.addLayout(btn_row_1)
         right_layout.addLayout(btn_row_2)
@@ -532,15 +561,19 @@ class MainWindow(QMainWindow):
         timeline_text.setWordWrap(True)
 
         bottom_buttons = QHBoxLayout()
-        bottom_buttons.addWidget(QPushButton("Add Media"))
+        self.add_media_btn = QPushButton("Add Media")
+        self.add_media_btn.clicked.connect(self.open_file_action)
+        bottom_buttons.addWidget(self.add_media_btn)
         bottom_buttons.addWidget(QPushButton("Trim"))
         bottom_buttons.addWidget(QPushButton("Split"))
         bottom_buttons.addWidget(QPushButton("Merge"))
         bottom_buttons.addWidget(QPushButton("Convert"))
         bottom_buttons.addStretch()
-        export_btn = QPushButton("Final Export")
-        export_btn.setObjectName("accentButton")
-        bottom_buttons.addWidget(export_btn)
+
+        self.export_btn = QPushButton("Export Project")
+        self.export_btn.setObjectName("accentButton")
+        self.export_btn.clicked.connect(self.export_action)
+        bottom_buttons.addWidget(self.export_btn)
 
         bottom_layout.addWidget(timeline_title)
         bottom_layout.addWidget(timeline_text)
@@ -554,6 +587,30 @@ class MainWindow(QMainWindow):
         root.addWidget(self.main_area, 1)
 
         self.sidebar.setCurrentRow(0)
+
+        self.setup_shortcuts()
+
+    def setup_shortcuts(self):
+        self.shortcut_open = QShortcut(QKeySequence("Ctrl+O"), self)
+        self.shortcut_open.activated.connect(self.open_file_action)
+
+        self.shortcut_export = QShortcut(QKeySequence("Ctrl+E"), self)
+        self.shortcut_export.activated.connect(self.export_action)
+
+        self.shortcut_theme = QShortcut(QKeySequence("Ctrl+T"), self)
+        self.shortcut_theme.activated.connect(self.toggle_theme)
+
+        self.shortcut_home = QShortcut(QKeySequence("Ctrl+1"), self)
+        self.shortcut_home.activated.connect(lambda: self.sidebar.setCurrentRow(0))
+
+        self.shortcut_split = QShortcut(QKeySequence("Ctrl+2"), self)
+        self.shortcut_split.activated.connect(lambda: self.sidebar.setCurrentRow(1))
+
+        self.shortcut_merge = QShortcut(QKeySequence("Ctrl+3"), self)
+        self.shortcut_merge.activated.connect(lambda: self.sidebar.setCurrentRow(2))
+
+        self.shortcut_convert = QShortcut(QKeySequence("Ctrl+4"), self)
+        self.shortcut_convert.activated.connect(lambda: self.sidebar.setCurrentRow(3))
 
     def update_theme_button_text(self):
         if self.theme_name == "dark":
@@ -572,6 +629,57 @@ class MainWindow(QMainWindow):
 
     def change_page(self, index: int):
         self.stack.setCurrentIndex(index)
+        page_names = ["Home", "Split", "Merge", "Convert"]
+        current_name = page_names[index] if 0 <= index < len(page_names) else "Unknown"
+
+        self.inspector_box.setPlainText(
+            f"Project Panel\n\n"
+            f"Current Tool: {current_name}\n"
+            f"Last Opened File: {self.last_opened_file or 'None'}\n\n"
+            f"Shortcuts:\n"
+            f"Ctrl+O = Open File\n"
+            f"Ctrl+E = Export Project\n"
+            f"Ctrl+T = Toggle Theme\n"
+            f"Ctrl+1/2/3/4 = Switch Tools"
+        )
+
+    def open_file_action(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Video File",
+            "",
+            "Video Files (*.mp4 *.mkv *.avi *.mov *.dav *.ts *.wmv);;All Files (*.*)"
+        )
+        if file_path:
+            self.last_opened_file = file_path
+            self.preview_box.setText(file_path)
+            self.inspector_box.setPlainText(
+                f"Project Panel\n\n"
+                f"Current Tool: {self.sidebar.currentItem().text() if self.sidebar.currentItem() else 'Unknown'}\n"
+                f"Last Opened File:\n{file_path}\n\n"
+                f"Shortcuts:\n"
+                f"Ctrl+O = Open File\n"
+                f"Ctrl+E = Export Project\n"
+                f"Ctrl+T = Toggle Theme\n"
+                f"Ctrl+1/2/3/4 = Switch Tools"
+            )
+
+    def open_folder_action(self):
+        folder_path = QFileDialog.getExistingDirectory(self, "Open Folder", "")
+        if folder_path:
+            self.inspector_box.setPlainText(
+                f"Project Panel\n\n"
+                f"Opened Folder:\n{folder_path}\n\n"
+                f"Last Opened File: {self.last_opened_file or 'None'}"
+            )
+
+    def export_action(self):
+        QMessageBox.information(
+            self,
+            "Export Project",
+            "Export action triggered.\n\n"
+            "You can connect this button later to your final render/export workflow."
+        )
 
 
 def main():
